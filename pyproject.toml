@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "astropy>=7.2.0",
+    "cmasher>=1.9.2",
     "ipykernel>=7.2.0",
     "lvm-tools>=0.0.10",
     "matplotdrip>=2.1.0",
