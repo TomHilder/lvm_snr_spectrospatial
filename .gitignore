@@ -1,3 +1,25 @@
+# Figures/images
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.pdf
+*.svg
+
+# MacOS crap
+.DS_Store
+
+# Data
+*.csv
+*.dat
+*.out
+*.log
+*.fits
+*.npz
+*.npy
+*.hdf5
+*.h5
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
