@@ -9,7 +9,7 @@ import jax.random as jr
 import matplotdrip  # noqa: F401
 import matplotlib.pyplot as plt
 import numpy as np
-from lvm_tools import DataConfig, FitDataBuilder, LVMTile
+from lvm_tools import DataConfig, FitDataBuilder, LVMTile, LVMTileCollection
 from lvm_tools.fit_data.filtering import BAD_FLUX_THRESHOLD
 from lvm_tools.utils.mask import mask_near_points
 from matplotdrip import colormaps  # noqa: F401
@@ -31,15 +31,31 @@ from spectracles import (
 # Some declaration-y stuff
 plt.style.use("drip")
 rng = np.random.default_rng(0)
-DATA_LOC = Path("../data/W28")
+DATA_LOC = Path("../data/W28/THOR")
 assert DATA_LOC.is_dir()
 jax.config.update("jax_enable_x64", True)
 
-# Line wavelength
-# LINE_λ = 6562.8  # (halpha)
-LINE_λ = 6583.45  # (nii)
-# LINE_λ = 9531.1  # (siii)
-λ_EXTENT = 8.0
+LINE_NAME = "NII"
+# LINE_NAME = "HALPHA"
+
+if LINE_NAME == "HALPHA":
+    LINE_λ = 6562.8
+    λ_EXTENT = 8.0
+    norm_F = 5e-13
+elif LINE_NAME == "NII":
+    LINE_λ = 6583.45
+    λ_EXTENT = 8.0
+    norm_F = 2e-13
+elif LINE_NAME == "SII":
+    LINE_λ = 6716.44
+    λ_EXTENT = 8.0
+    norm_F = 1e-13
+elif LINE_NAME == "SIII":
+    LINE_λ = 9531.1
+    λ_EXTENT = 8.0
+    norm_F = 0.5e-13
+else:
+    raise ValueError(f"Unknown line name: {LINE_NAME}")
 
 # ============================
 # Load and plot the data
@@ -47,21 +63,20 @@ LINE_λ = 6583.45  # (nii)
 
 # Load the data
 drp_files = list(DATA_LOC.glob("*.fits"))
-drp_file = drp_files[0]
-tile = LVMTile.from_file(drp_file=drp_file)
-print(tile)
+# drp_file = drp_files[0]
+# tile = LVMTile.from_file(drp_file=drp_file)
+tiles = LVMTileCollection.from_tiles(
+    [LVMTile.from_file(drp_file=drp_file) for drp_file in drp_files]
+)
 fd = FitDataBuilder(
-    tiles=tile,
+    tiles=tiles,
     config=DataConfig.from_tiles(
-        tile,
+        tiles,
         λ_range=(
             LINE_λ - λ_EXTENT,
             LINE_λ + λ_EXTENT,
         ),
-        # normalise_F_scale=0.5e-13,  # (siii)
-        normalise_F_scale=2e-13,  # (nii)
-        # normalise_F_scale=5e-13,  # (halpha)
-        # normalise_F_offset=0.0, # (not needed)
+        normalise_F_scale=norm_F,
         F_range=(BAD_FLUX_THRESHOLD, 1e-12),
     ),
 ).build()
@@ -72,11 +87,12 @@ vmin, vmax = np.nanpercentile(sum_int_map, [5, 95])
 
 # Plot the data
 fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
-sc = ax.scatter(fd.α, fd.δ, c=sum_int_map, s=70, vmin=vmin, vmax=vmax)
+sc = ax.scatter(fd.α, fd.δ, c=sum_int_map, s=20, vmin=vmin, vmax=vmax)
 ax.set_xlabel(r"$x$")
 ax.set_ylabel(r"$y$")
 ax.set_title("Data from LVM tile")
 ax.set_aspect("equal")
+plt.savefig(f"summed_intensity_map_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
 # Plot a bunch of spectra from random spaxels
@@ -92,6 +108,17 @@ for i, ax in enumerate(axes.flat):
     # ax.set_yticks([])
     ax.set_ylim(-0.1, 1.3)
 plt.tight_layout()
+plt.savefig(f"example_spectra_{LINE_NAME}.pdf", bbox_inches="tight")
+plt.show()
+
+# Plot the summed spectrum across all spaxels
+summed_spectrum = np.nansum(fd.flux, axis=1)
+fig, ax = plt.subplots(figsize=(10, 5), dpi=100)
+ax.plot(fd.λ, summed_spectrum, color="C0")
+ax.set_xlabel(r"$\lambda$ [Å]")
+ax.set_ylabel(r"Summed $F_\lambda$")
+ax.set_title("Summed spectrum across all spaxels")
+plt.savefig(f"summed_spectrum_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
 # ============================
@@ -100,7 +127,7 @@ plt.show()
 
 # Known values
 n_spaxels = fd.α.shape[0]
-n_modes = (101, 101)
+n_modes = (201, 201)
 line_centre = Known(LINE_λ)
 idx_λ = np.argmin(np.abs(fd.λ - LINE_λ))
 σ_lsf = Known(fd.lsf_σ[idx_λ])
@@ -108,16 +135,23 @@ v_bary = Known(fd.v_bary)
 
 # Kernel choice
 kernel = Matern12
+# kernel = Matern32
 
 # Kernel hyperparameters
 # kernel_kwargs = dict(fixed=True, lower=0.0)
 kernel_kwargs = dict(fixed=True, log=True)
 A_var = ConstrainedParameter(10.0, **kernel_kwargs)
+# A_var = ConstrainedParameter(1.0, **kernel_kwargs)
 v_var = ConstrainedParameter(10.0, **kernel_kwargs)
+# v_var = ConstrainedParameter(1.0, **kernel_kwargs)
 σ_var = ConstrainedParameter(10.0, **kernel_kwargs)
+# σ_var = ConstrainedParameter(1.0, **kernel_kwargs)
 A_len = ConstrainedParameter(1.0, **kernel_kwargs)
+# A_len = ConstrainedParameter(0.3, **kernel_kwargs)
 v_len = ConstrainedParameter(1.0, **kernel_kwargs)
+# v_len = ConstrainedParameter(0.3, **kernel_kwargs)
 σ_len = ConstrainedParameter(1.0, **kernel_kwargs)
+# σ_len = ConstrainedParameter(0.3, **kernel_kwargs)
 
 # Parameters with initial values
 offsets = Parameter(np.zeros(n_spaxels))
@@ -167,22 +201,24 @@ schedule = build_schedule(
     model=model,
     loss_fn=neg_ln_posterior,
     phases=[
-        (1000, 0.01),  # steps, lr
-        (1000, 0.01),
-        (1000, 0.01),
-        (1000, 0.01),
-        (1000, 0.01),
-        (1000, 0.01),
-        (1000, 0.01),
-        (1000, 0.01),
-        (500, 0.01),
-        # (2000, 0.01),
-        (500, 0.001),
-        # (2000, 0.001),
+        (4000, 0.01),  # steps, lr
+        (4000, 0.01),
+        (4000, 0.01),
+        (4000, 0.01),
+        (4000, 0.01),
+        (4000, 0.01),
+        (4000, 0.01),
+        (4000, 0.01),
+        # (500, 0.01),
+        (4000, 0.01),
+        # (500, 0.001),
+        (4000, 0.001),
     ],
     params={
         "*.A.gp.coefficients": init_normal(0) | free_in(0, 3, 4, 5, 8, 9, 10),
+        # "*.A.gp.coefficients": init_normal(0) | free_in(0, 3, 5, 8, 9, 10),
         "*.v.gp.coefficients": init_normal(1) | free_in(1, 3, 4, 6, 8, 9, 10),
+        # "*.v.gp.coefficients": init_normal(1) | free_in(1, 3, 6, 8, 9, 10),
         "*.vσ.gp.coefficients": init_normal(2) | free_in(2, 4, 7, 8, 9, 10),
         "*.A.gp.kernel.length_scale": free_in(5, 8, 9, 10),
         "*.A.gp.kernel.variance": free_in(5, 8, 9, 10),
@@ -191,6 +227,7 @@ schedule = build_schedule(
         "*.vσ.gp.kernel.length_scale": free_in(7, 8, 9, 10),
         "*.vσ.gp.kernel.variance": free_in(7, 8, 9, 10),
     },
+    Δloss_criterion=1e-4,
     key=jr.key(42),
 )
 
@@ -212,18 +249,26 @@ plt.plot(schedule.loss_history)
 # plt.xscale("log")
 plt.xlabel("Step")
 plt.ylabel("neg. log posterior")
+plt.savefig(f"loss_history_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
+final_stage_idx = 6
 plt.figure()
 plt.title("Final stage loss history")
-plt.plot(-schedule.loss_histories[-1])
+hist = schedule.loss_histories[final_stage_idx]
+sign = np.sign(np.min(hist))
+print(sign)
+plt.plot(sign * hist)
 plt.xlabel("Step")
-plt.ylabel("log posterior")
+if sign < 0:
+    plt.ylabel("log posterior (higher is better)")
+else:
+    plt.ylabel("neg. log posterior (lower is better)")
 plt.yscale("log")
-plt.tight_layout()
+plt.savefig(f"final_stage_loss_history_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
-pred_model = schedule.model_history[-1].get_locked_model()
+pred_model = schedule.model_history[7].get_locked_model()
 
 print("Final parameter values:")
 print("v_syst_1:", pred_model.line_1.v_syst.val)
@@ -253,7 +298,7 @@ mask = mask_near_points(
     ygrid=δ_dense_1D,
     xpoints=fd.α,
     ypoints=fd.δ,
-    threshold=0.15,
+    threshold=0.05,
 )
 α_dense, δ_dense = np.meshgrid(α_dense_1D, δ_dense_1D)
 αδ_dense = SpatialDataGeneric(
@@ -309,6 +354,7 @@ plt.colorbar(im, ax=ax[:, 2], label="Velocity Dispersion", **cbar_kwargs)
 for ax_flat in ax.flat:
     ax_flat.set_xticks([])
     ax_flat.set_yticks([])
+plt.savefig(f"predicted_fields_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
 ### Plot the velocity separation
@@ -319,6 +365,7 @@ fig, ax = plt.subplots(figsize=(8, 8), dpi=100, layout="compressed")
 im = ax.imshow(v_sep, cmap="RdBu", vmin=-max_v_sep, vmax=max_v_sep)
 plt.title("Velocity separation")
 plt.colorbar(im, ax=ax)
+plt.savefig(f"velocity_separation_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
 
@@ -340,6 +387,7 @@ for i, ax in enumerate(axes.flat):
     if i == 0:
         ax.legend()
 plt.tight_layout()
+plt.savefig(f"example_spectra_with_model_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
 ### Evaluate on the actual data points
@@ -375,17 +423,20 @@ for i, ax in enumerate(axes.flat):
     if i == 0:
         ax.legend()
 plt.tight_layout()
+plt.savefig(f"example_spectra_both_lines_active_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
 # Plot the continuum offsets inferred
 offs = pred_model.offs.const.spaxel_values.val
 fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
-ax.scatter(fd.α, fd.δ, c=np.log10(offs), s=74)
+ax.scatter(fd.α, fd.δ, c=np.log10(offs), s=20)
 ax.set_aspect(1)
+plt.savefig(f"continuum_offsets_log_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
-ax.scatter(fd.α, fd.δ, c=offs, s=74)
+ax.scatter(fd.α, fd.δ, c=offs, s=20)
 ax.set_aspect(1)
+plt.savefig(f"continuum_offsets_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
 # Filter spaxels to those only where the offsets are above a certain values
@@ -412,4 +463,9 @@ for i, ax in enumerate(axes.flat):
     # ax.set_yscale("log")
     if i == 0:
         ax.legend()
+plt.savefig(f"example_spectra_large_offsets_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
+
+star_mask = np.ones_like(fd.flux, dtype=bool)
+print(star_mask.shape, fd.mask.shape)
+star_mask[]
