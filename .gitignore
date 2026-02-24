@@ -19,6 +19,7 @@
 *.npy
 *.hdf5
 *.h5
+*.model
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
