@@ -1,5 +1,3 @@
-# Testing that we can build the model
-
 from pathlib import Path
 
 import cmasher as cmr  # noqa: F401
@@ -35,8 +33,9 @@ DATA_LOC = Path("../data/W28/THOR")
 assert DATA_LOC.is_dir()
 jax.config.update("jax_enable_x64", True)
 
-LINE_NAME = "NII"
+# LINE_NAME = "NII"
 # LINE_NAME = "HALPHA"
+LINE_NAME = "SII"
 
 if LINE_NAME == "HALPHA":
     LINE_λ = 6562.8
@@ -121,6 +120,18 @@ ax.set_title("Summed spectrum across all spaxels")
 plt.savefig(f"summed_spectrum_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
+# Try to load the star mask if it exists:
+try:
+    star_mask_loaded = np.load("star_mask.npy")
+    star_mask_existed = True
+    print("Star mask found and loaded.")
+except FileNotFoundError:
+    star_mask_loaded = np.ones_like(fd.mask, dtype=bool)
+    star_mask_existed = False
+    print("Star mask not found, stars not masked. Fit [NII] to get it.")
+
+total_mask = np.logical_and(fd.mask, star_mask_loaded)
+
 # ============================
 # Build and configure the model
 # ============================
@@ -139,7 +150,8 @@ kernel = Matern12
 
 # Kernel hyperparameters
 # kernel_kwargs = dict(fixed=True, lower=0.0)
-kernel_kwargs = dict(fixed=True, log=True)
+# kernel_kwargs = dict(fixed=True, log=True)
+kernel_kwargs = dict(log=True)
 A_var = ConstrainedParameter(10.0, **kernel_kwargs)
 # A_var = ConstrainedParameter(1.0, **kernel_kwargs)
 v_var = ConstrainedParameter(10.0, **kernel_kwargs)
@@ -197,35 +209,31 @@ initial_loss = neg_ln_posterior(
 print(f"Initial loss: {initial_loss:.2f}")
 
 # Build an optimisation schedule
+# n_step_base = 4000 # definitely works for [nii]
+n_step_base = 1000
 schedule = build_schedule(
     model=model,
     loss_fn=neg_ln_posterior,
     phases=[
-        (4000, 0.01),  # steps, lr
-        (4000, 0.01),
-        (4000, 0.01),
-        (4000, 0.01),
-        (4000, 0.01),
-        (4000, 0.01),
-        (4000, 0.01),
-        (4000, 0.01),
-        # (500, 0.01),
-        (4000, 0.01),
-        # (500, 0.001),
-        (4000, 0.001),
+        (n_step_base, 0.01),  # steps, lr
+        (n_step_base, 0.01),
+        (n_step_base, 0.01),
+        (n_step_base, 0.01),
+        (n_step_base, 0.01),
+        (2 * n_step_base, 0.001),
+        (2 * n_step_base, 0.001),
+        (2 * n_step_base, 0.001),
     ],
     params={
-        "*.A.gp.coefficients": init_normal(0) | free_in(0, 3, 4, 5, 8, 9, 10),
-        # "*.A.gp.coefficients": init_normal(0) | free_in(0, 3, 5, 8, 9, 10),
-        "*.v.gp.coefficients": init_normal(1) | free_in(1, 3, 4, 6, 8, 9, 10),
-        # "*.v.gp.coefficients": init_normal(1) | free_in(1, 3, 6, 8, 9, 10),
-        "*.vσ.gp.coefficients": init_normal(2) | free_in(2, 4, 7, 8, 9, 10),
-        "*.A.gp.kernel.length_scale": free_in(5, 8, 9, 10),
-        "*.A.gp.kernel.variance": free_in(5, 8, 9, 10),
-        "*.v.gp.kernel.length_scale": free_in(6, 8, 9, 10),
-        "*.v.gp.kernel.variance": free_in(6, 8, 9, 10),
-        "*.vσ.gp.kernel.length_scale": free_in(7, 8, 9, 10),
-        "*.vσ.gp.kernel.variance": free_in(7, 8, 9, 10),
+        "*.A.gp.coefficients": init_normal(0) | free_in(0, 3, 4, 5),
+        "*.v.gp.coefficients": init_normal(1) | free_in(1, 3, 4, 6),
+        "*.vσ.gp.coefficients": init_normal(2) | free_in(2, 4, 7),
+        "*.A.gp.kernel.length_scale": free_in(5),
+        "*.A.gp.kernel.variance": free_in(5),
+        "*.v.gp.kernel.length_scale": free_in(6),
+        "*.v.gp.kernel.variance": free_in(6),
+        "*.vσ.gp.kernel.length_scale": free_in(7),
+        "*.vσ.gp.kernel.variance": free_in(7),
     },
     Δloss_criterion=1e-4,
     key=jr.key(42),
@@ -236,17 +244,15 @@ schedule.run_all(
     xy_data=fd.αδ_data,
     data=fd.flux,
     u_data=fd.u_flux,
-    mask=fd.mask,
+    mask=total_mask,
 )
-
-# Attempt to evaluate the loss with the starting parameters to check for issues
-
 
 # Plot the loss history
 plt.figure()
 plt.title("Loss history")
 plt.plot(schedule.loss_history)
-# plt.xscale("log")
+plt.xscale("log")
+# plt.yscale("log")
 plt.xlabel("Step")
 plt.ylabel("neg. log posterior")
 plt.savefig(f"loss_history_{LINE_NAME}.pdf", bbox_inches="tight")
@@ -268,7 +274,7 @@ plt.yscale("log")
 plt.savefig(f"final_stage_loss_history_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
-pred_model = schedule.model_history[7].get_locked_model()
+pred_model = schedule.model_history[-1].get_locked_model()
 
 print("Final parameter values:")
 print("v_syst_1:", pred_model.line_1.v_syst.val)
@@ -316,12 +322,14 @@ v_pred_2 = pred_model.line_2.v(αδ_dense).reshape(n_dense, n_dense)
 v_pred_2_with_syst = v_pred_2 + pred_model.line_2.v_syst.val
 vσ_pred_2 = pred_model.line_2.vσ(αδ_dense).reshape(n_dense, n_dense)
 
-A_pred_1 = np.where(mask, A_pred_1, np.nan)
-A_pred_2 = np.where(mask, A_pred_2, np.nan)
+A_pred_1 = fd.predict_flux(np.where(mask, A_pred_1, np.nan)) / 1e-12
+A_pred_2 = fd.predict_flux(np.where(mask, A_pred_2, np.nan)) / 1e-12
 v_pred_1 = np.where(mask, v_pred_1, np.nan)
 v_pred_2 = np.where(mask, v_pred_2, np.nan)
 vσ_pred_1 = np.where(mask, vσ_pred_1, np.nan)
 vσ_pred_2 = np.where(mask, vσ_pred_2, np.nan)
+v_pred_1_with_syst = np.where(mask, v_pred_1_with_syst, np.nan)
+v_pred_2_with_syst = np.where(mask, v_pred_2_with_syst, np.nan)
 
 log_A = False
 
@@ -330,10 +338,19 @@ if log_A:
 else:
     f_A = lambda x: x  # noqa: E731
 
-A_vmin, A_vmax = f_A(1e-3), f_A(3)  # max(A_pred_1.max(), A_pred_2.max())
-max_abs_v = max(np.nanmax(np.abs(v_pred_1)), np.nanmax(np.abs(v_pred_2)))
+A_vmin, A_vmax = (
+    f_A(fd.predict_flux(1e-3 / 1e-12)),
+    f_A(fd.predict_flux(4 / 1e-12)),
+)  # max(A_pred_1.max(), A_pred_2.max())
+max_abs_v = 0.8 * max(np.nanmax(np.abs(v_pred_1)), np.nanmax(np.abs(v_pred_2)))
+# max_abs_v = max(
+#     np.nanmax(np.abs(v_pred_1_with_syst)), np.nanmax(np.abs(v_pred_2_with_syst))
+# )
 v_vmin, v_vmax = -max_abs_v, max_abs_v
-vσ_vmin, vσ_vmax = 0, max(np.nanmax(vσ_pred_1), np.nanmax(vσ_pred_2))
+vσ_vmin, vσ_vmax = (
+    min(np.nanmin(vσ_pred_1), np.nanmin(vσ_pred_2)),
+    max(np.nanmax(vσ_pred_1), np.nanmax(vσ_pred_2)),
+)
 
 A_imshow_kwargs = dict(origin="lower", vmin=A_vmin, vmax=A_vmax, cmap="cmr.voltage_r")
 v_imshow_kwargs = dict(
@@ -341,19 +358,29 @@ v_imshow_kwargs = dict(
 )
 σ_imshow_kwargs = dict(origin="lower", vmin=vσ_vmin, vmax=vσ_vmax, cmap="cmr.torch_r")
 cbar_kwargs = dict(orientation="horizontal", location="top", pad=0.01)
-fig, ax = plt.subplots(2, 3, figsize=(18, 12), dpi=100, layout="compressed")
+fig, ax = plt.subplots(2, 3, figsize=(15, 7), dpi=100, layout="compressed")
 im = ax[0, 0].imshow(f_A(A_pred_1), **A_imshow_kwargs)
 im = ax[1, 0].imshow(f_A(A_pred_2), **A_imshow_kwargs)
-plt.colorbar(im, ax=ax[:, 0], label="Line Flux", **cbar_kwargs)
+plt.colorbar(
+    im,
+    ax=ax[:, 0],
+    label=r"Line Flux [10$^{-12}$ erg s$^{-1}$ cm$^{-2}$]",
+    **cbar_kwargs,
+)
 im = ax[0, 1].imshow(v_pred_1, **v_imshow_kwargs)
 im = ax[1, 1].imshow(v_pred_2, **v_imshow_kwargs)
-plt.colorbar(im, ax=ax[:, 1], label="Velocity", **cbar_kwargs)
+# im = ax[0, 1].imshow(v_pred_1_with_syst, **v_imshow_kwargs)
+# im = ax[1, 1].imshow(v_pred_2_with_syst, **v_imshow_kwargs)
+plt.colorbar(im, ax=ax[:, 1], label=r"Velocity [km s$^{-1}$]", **cbar_kwargs)
 im = ax[0, 2].imshow(vσ_pred_1, **σ_imshow_kwargs)
 im = ax[1, 2].imshow(vσ_pred_2, **σ_imshow_kwargs)
-plt.colorbar(im, ax=ax[:, 2], label="Velocity Dispersion", **cbar_kwargs)
+plt.colorbar(im, ax=ax[:, 2], label=r"Velocity Dispersion [km s$^{-1}$]", **cbar_kwargs)
 for ax_flat in ax.flat:
     ax_flat.set_xticks([])
     ax_flat.set_yticks([])
+    ax_flat.set_xlim(ax_flat.get_xlim()[::-1])  # swap x min and max
+ax[0, 0].set_ylabel("Component 1")
+ax[1, 0].set_ylabel("Component 2")
 plt.savefig(f"predicted_fields_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
@@ -362,9 +389,13 @@ v_sep = v_pred_2_with_syst - v_pred_1_with_syst
 v_sep = np.where(mask, v_sep, np.nan)
 max_v_sep = np.nanmax(np.abs(v_sep))
 fig, ax = plt.subplots(figsize=(8, 8), dpi=100, layout="compressed")
-im = ax.imshow(v_sep, cmap="RdBu", vmin=-max_v_sep, vmax=max_v_sep)
-plt.title("Velocity separation")
-plt.colorbar(im, ax=ax)
+im = ax.imshow(v_sep, cmap="RdBu", vmin=-max_v_sep, vmax=max_v_sep, origin="lower")
+# plt.title("Velocity separation")
+# Swap x min and max
+ax.set_xlim(ax.get_xlim()[::-1])
+ax.set_xticks([])
+ax.set_yticks([])
+plt.colorbar(im, ax=ax, label=r"Velocity separation [km s$^{-1}$]", **cbar_kwargs)
 plt.savefig(f"velocity_separation_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
@@ -373,6 +404,17 @@ plt.show()
 
 λ_dense = np.linspace(fd.λ.min(), fd.λ.max(), 200)
 pred_flux_λ_dense = jax.vmap(pred_model, in_axes=(0, None))(λ_dense, fd.αδ_data)
+pred_flux_λ_dense_comp_1 = jax.vmap(pred_model.line_1, in_axes=(0, None))(
+    λ_dense, fd.αδ_data
+)
+pred_flux_λ_dense_comp_2 = jax.vmap(pred_model.line_2, in_axes=(0, None))(
+    λ_dense, fd.αδ_data
+)
+pred_flux_λ_dense_offs = jax.vmap(pred_model.offs, in_axes=(0, None))(
+    λ_dense, fd.αδ_data
+)
+pred_flux_λ_dense_comp_1 = pred_flux_λ_dense_comp_1 + pred_flux_λ_dense_offs
+pred_flux_λ_dense_comp_2 = pred_flux_λ_dense_comp_2 + pred_flux_λ_dense_offs
 
 fig, axes = plt.subplots(10, 2, figsize=(15, 15), dpi=100, sharex=True, sharey=True)
 for i, ax in enumerate(axes.flat):
@@ -399,7 +441,7 @@ v_pred_2_dp = pred_model.line_2.v(fd.αδ_data) + pred_model.line_2.v_syst.val
 vσ_pred_2_dp = pred_model.line_2.vσ(fd.αδ_data)
 
 # Filer spaxel indices for which the model predicts a line flux in both components above the normalisation scale (i.e. where the model is "active" in both components)
-threshold = 0.2
+threshold = 0.3
 active_spax_inds = np.where(
     (A_pred_1_dp.flatten() > threshold) & (A_pred_2_dp.flatten() > threshold)
 )[0]
@@ -412,7 +454,7 @@ spax_inds_both_lines_active = rng.choice(active_spax_inds, size=20, replace=Fals
 fig, axes = plt.subplots(10, 2, figsize=(15, 20), dpi=100, sharex=True, sharey=True)
 for i, ax in enumerate(axes.flat):
     spax_ind = spax_inds_both_lines_active[i]
-    ax.plot(fd.λ, fd._flux[:, spax_ind], color="C0", label="Data")
+    ax.scatter(fd.λ, fd._flux[:, spax_ind], color="C0", label="Data", zorder=1)
     ax.plot(λ_dense, pred_flux_λ_dense[:, spax_ind], color="C1", label="Model")
     # ax.set_title(f"Spaxel {spax_ind}")
     # ax.set_xlabel(r"$\lambda$ [Å]")
@@ -426,24 +468,90 @@ plt.tight_layout()
 plt.savefig(f"example_spectra_both_lines_active_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
 
+# Filer spaxel indices for which the model predicts a line flux in both components above the normalisation scale (i.e. where the model is "active" in both components)
+threshold = 0.4
+active_spax_inds = np.where(
+    (A_pred_1_dp.flatten() > threshold) & (A_pred_2_dp.flatten() > threshold)
+)[0]
+print(
+    f"Number of spaxels where model is active in both components: {len(active_spax_inds)}"
+)
+
+# ### Plot in spaxel indices where both lines are active
+# spax_inds_both_lines_active = rng.choice(active_spax_inds, size=20, replace=False)
+# fig, axes = plt.subplots(3, 1, figsize=(6, 8), dpi=100, sharex=True, sharey=True)
+# for i, ax in enumerate(axes.flat):
+#     spax_ind = spax_inds_both_lines_active[i]
+#     ax.plot(
+#         λ_dense, pred_flux_λ_dense[:, spax_ind], color="C0", label="Model", zorder=-1
+#     )
+#     # Plot the individual line components
+#     ax.plot(
+#         λ_dense,
+#         pred_flux_λ_dense_comp_1[:, spax_ind],
+#         color="C1",
+#         label="Component 1",
+#         linestyle="--",
+#         zorder=-2,
+#     )
+#     ax.plot(
+#         λ_dense,
+#         pred_flux_λ_dense_comp_2[:, spax_ind],
+#         color="C2",
+#         label="Component 2",
+#         linestyle="--",
+#         zorder=-2,
+#     )
+#     ax.scatter(fd.λ, fd._flux[:, spax_ind], color="k", label="Data")
+#     # ax.set_title(f"Spaxel {spax_ind}")
+#     # ax.set_xlabel(r"$\lambda$ [Å]")
+#     # ax.set_ylabel(r"$F_\lambda$ [erg/s/cm²/Å]")
+#     # ax.set_xticks([])
+#     ax.set_yticks([])
+#     # ax.set_yscale("log")
+#     if i == 0:
+#         ax.legend()
+#     if i == len(axes.flat) - 1:
+#         ax.set_xlabel(r"$\lambda$ [Å]")
+# axes[-1].set_xlim(fd.λ.min(), 6569.5)
+# plt.tight_layout()
+# plt.savefig(
+#     f"small_panel_example_spectra_both_lines_active_{LINE_NAME}.pdf",
+#     bbox_inches="tight",
+# )
+# plt.show()
+
 # Plot the continuum offsets inferred
 offs = pred_model.offs.const.spaxel_values.val
-fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
-ax.scatter(fd.α, fd.δ, c=np.log10(offs), s=20)
-ax.set_aspect(1)
-plt.savefig(f"continuum_offsets_log_{LINE_NAME}.pdf", bbox_inches="tight")
-plt.show()
-fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
-ax.scatter(fd.α, fd.δ, c=offs, s=20)
-ax.set_aspect(1)
-plt.savefig(f"continuum_offsets_{LINE_NAME}.pdf", bbox_inches="tight")
-plt.show()
 
 # Filter spaxels to those only where the offsets are above a certain values
 offs_threshold = 0.1
 offs_spax_inds = np.where((offs.flatten() > threshold))[0]
 print(f"Number of spaxels with large offsets: {len(offs_spax_inds)}")
 
+fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
+ax.scatter(fd.α, fd.δ, c=np.log10(offs), s=20)
+ax.set_aspect(1)
+plt.savefig(f"continuum_offsets_log_{LINE_NAME}.pdf", bbox_inches="tight")
+plt.show()
+fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
+# ax.scatter(fd.α, fd.δ, c=offs, s=20)
+offs_id = np.array(offs)
+offs_id[offs < threshold] = np.nan
+ax.scatter(fd.α, fd.δ, c=offs_id, s=20, vmin=0)
+ax.set_aspect(1)
+plt.savefig(f"continuum_offsets_{LINE_NAME}.pdf", bbox_inches="tight")
+plt.show()
+
+# [NII] used to get the star mask
+if LINE_NAME == "NII":
+    star_mask = np.ones_like(fd.flux, dtype=bool)
+    # print(star_mask.shape, fd.mask.shape)
+    # print(offs.shape)
+    star_mask[:, offs > offs_threshold] = False
+    # print((~star_mask).sum())
+    if not star_mask_existed:
+        np.save("star_mask.npy", arr=star_mask)
 
 fig, axes = plt.subplots(10, 2, figsize=(15, 20), dpi=100, sharex=True, sharey=True)
 # fig, axes = plt.subplots(10, 2, figsize=(4, 5), dpi=100, sharex=True, sharey=True)
@@ -465,7 +573,3 @@ for i, ax in enumerate(axes.flat):
         ax.legend()
 plt.savefig(f"example_spectra_large_offsets_{LINE_NAME}.pdf", bbox_inches="tight")
 plt.show()
-
-star_mask = np.ones_like(fd.flux, dtype=bool)
-print(star_mask.shape, fd.mask.shape)
-star_mask[]
